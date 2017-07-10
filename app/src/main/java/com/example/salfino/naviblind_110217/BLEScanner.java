@@ -1,5 +1,6 @@
 package com.example.salfino.naviblind_110217;
 
+import android.app.Service;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothGatt;
 import android.bluetooth.BluetoothGattCallback;
@@ -12,20 +13,14 @@ import android.bluetooth.le.ScanResult;
 import android.bluetooth.le.ScanSettings;
 import android.content.Context;
 import android.content.Intent;
-import android.os.Bundle;
 import android.os.Handler;
-import android.support.v7.app.AppCompatActivity;
-import android.widget.TextView;
+import android.os.IBinder;
 import android.widget.Toast;
 
 import java.util.List;
-import java.util.Locale;
 
-public class TestActivity extends AppCompatActivity {
-
-    public TextView mTest;
-    public TextView mTest2;
-    public final static int REQUEST_ENABLE_BT = 1;
+public class BLEScanner extends Service {
+    int mStartMode;
     public BluetoothAdapter mBTAdapter;
     BluetoothGatt mBluetoothGatt;
     BluetoothLeScanner scanner;
@@ -35,37 +30,55 @@ public class TestActivity extends AppCompatActivity {
     public static final long SCAN_PERIOD = 10000;
     String dName = "";
     String macAddress = "";
-    double rssi = 0;
-    double meters = 0;
+    public double rssiGR = -17;
+    public double rssiSR = -17;
+    public double metersGR = 0;
+    public double metersSR = 0;
+    final static String BLE_ACTION = "com.example.salfino.naviblind.BLE_ACTION";
 
     @Override
-    protected void onCreate(Bundle savedInstanceState) {
-        super.onCreate(savedInstanceState);
-        setContentView(R.layout.activity_test);
+    public int onStartCommand(Intent intent, int flags, int startId) {
+        Toast.makeText(BLEScanner.this, "BLE SCAN STARTED!!!", Toast.LENGTH_SHORT).show();
+        //return super.onStartCommand(intent,flags,startId);
+        return mStartMode;
+    }
 
-        mTest = (TextView) findViewById(R.id.textView);
-        mTest.setTextSize(20);
-        mTest.setTextColor(0xFFFF4046);
+    @Override
+    public IBinder onBind(Intent intent) {
+        // TODO: Return the communication channel to the service.
+        throw new UnsupportedOperationException("Not yet implemented");
+    }
 
-        mTest2 = (TextView) findViewById(R.id.textViewtwo);
-        mTest2.setTextSize(20);
-        mTest2.setTextColor(0xFFFF4044);
-
+    @Override
+    public void onCreate() {
+        super.onCreate();
         initialiseBLE();
         startLeScan(true);
-        Toast.makeText(TestActivity.this, "SCAN STARTED...", Toast.LENGTH_LONG).show();
-        /*if (mScanning) {
-            mTest.setText("Scanning for BLE Devices");
-        }
-        else{
-            mTest.setText("Stopped Scanning...");
-        }*/
     }
+
+    @Override
+    public void onDestroy() {
+        super.onDestroy();
+        startLeScan(false);
+        Toast.makeText(BLEScanner.this, "BLE SCAN STOPPED...", Toast.LENGTH_SHORT).show();
+    }
+
+    @Override
+    public boolean onUnbind(Intent intent) {
+        return super.onUnbind(intent);
+    }
+
+    @Override
+    public void onRebind(Intent intent) {
+        super.onRebind(intent);
+    }
+
     //Method to convert a byte array to a HEX. string.
     private String byteArrayToHex(byte[] a) {
         StringBuilder sb = new StringBuilder(a.length * 2);
         for(byte b: a)
             sb.append(String.format("%02x", b & 0xff));
+
         return sb.toString();
     }
 
@@ -73,11 +86,6 @@ public class TestActivity extends AppCompatActivity {
 
         final BluetoothManager bluetoothManager =  (BluetoothManager) getSystemService(Context.BLUETOOTH_SERVICE);
         mBTAdapter = bluetoothManager.getAdapter();//Get the Bluetooth Adapter first
-
-        if (mBTAdapter == null || !mBTAdapter.isEnabled()) {//Enable Bluetooth
-            Intent enableBtIntent = new Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE);
-            startActivityForResult(enableBtIntent, REQUEST_ENABLE_BT);//Locally defined integer greater than zero
-        }
         //Create the scan settings
         ScanSettings.Builder scanSettingsBuilder = new ScanSettings.Builder();
         //Set scan latency mode. Lower latency, faster device detection/more battery and resources consumption
@@ -105,14 +113,12 @@ public class TestActivity extends AppCompatActivity {
             //device to scan for. The Callback is defined above as a method.
             mScanning = true;
             scanner.startScan(null, scanSettings, mScanCallback);
-            mTest.setText("Scanning for BLE Devices");
-            mTest2.setText("Scanning for BLE Devices");
+            //Toast.makeText(BLEScanner.this, "SCANNING FOR BLE DEVICES...", Toast.LENGTH_SHORT).show();
         }else{
             //Stop scan
             mScanning = false;
             scanner.stopScan(mScanCallback);
-            mTest.setText("Stopped Scanning...");
-            mTest2.setText("Stopped Scanning...");
+            //Toast.makeText(BLEScanner.this, "SCANNING STOPPED...", Toast.LENGTH_SHORT).show();
         }
     }
 
@@ -131,33 +137,39 @@ public class TestActivity extends AppCompatActivity {
         @Override
         public void onScanResult(int callbackType, ScanResult result) {
             super.onScanResult(callbackType, result);
+
             String advertisingString = byteArrayToHex(result.getScanRecord().getBytes());
-            //rssi = result.getRssi();
-            //meters = getDistance(rssi);
             dName = result.getDevice().getName();
-            if (dName != null) {
+            if (dName != null){
                 dName = (result.getDevice().getName()).trim();
             }
             macAddress = result.getDevice().getAddress();
-            if (macAddress != null) {
+            if (macAddress != null){
                 macAddress = (result.getDevice().getAddress()).trim();
             }
 
             /*mTest.setText(String.format(Locale.UK, "RSSI: %d, \nMAC Address: %s, \nDevice Name: %s",
                     result.getRssi(), result.getDevice().getAddress(), result.getDevice().getName()));*/
+            Intent intent = new Intent();
+            intent.setAction(BLE_ACTION);
 
             if (macAddress != null && macAddress.equals("F4:46:EA:8F:C2:2D")) {
-                mTest.setText(String.format(Locale.UK, "Position: %s,\nRSSI: %d, \nMAC Address: %s, \nDevice Name: %s, \nMeters: %f",
-                        "End Point Beacon", result.getRssi(), result.getDevice().getAddress(), result.getDevice().getName(), getDistance(result.getRssi(),"GC")));
+                rssiGR = result.getRssi();
+                metersGR = getDistance(rssiGR,"GC");
+                intent.putExtra("GR_METERS",metersGR);
+                sendBroadcast(intent);
+                Toast.makeText(BLEScanner.this, "METERS GR::" + metersGR, Toast.LENGTH_SHORT).show();
             } else if (macAddress != null && macAddress.equals("C3:4E:E7:D1:2E:3A")) {
-                mTest2.setText(String.format(Locale.UK, "Position: %s,\nRSSI: %d, \nMAC Address: %s, \nDevice Name: %s, \nMeters: %f",
-                        "Lifts Area Beacon", result.getRssi(), result.getDevice().getAddress(), result.getDevice().getName(), getDistance(result.getRssi(),"SR")));
+                rssiSR = result.getRssi();
+                metersSR = getDistance(rssiSR,"SR");
+                //intent.putExtra("SR_METERS",metersSR);
+                //sendBroadcast(intent);
+                Toast.makeText(BLEScanner.this, "METERS SR::" + metersSR, Toast.LENGTH_SHORT).show();
             }
-         else
+            else
 
             {
-             mTest.setText("Can't find End Point Beacon!!!");
-             mTest2.setText("Can't find Lifts Area Beacon!!!");
+                //Do nothing
             }
 
             /*if (dName != null && macAddress != null) {
@@ -170,6 +182,7 @@ public class TestActivity extends AppCompatActivity {
             } else {
                 mTest.setText("Reading NULL...");
             }*/
+
         }
 
         @Override
@@ -235,31 +248,4 @@ public class TestActivity extends AppCompatActivity {
             super.onMtuChanged(gatt, mtu, status);
         }
     };
-
-    @Override
-    protected void onStart() {
-        super.onStart();
-    }
-
-    @Override
-    protected void onStop() {
-        super.onStop();
-        startLeScan(false);
-        Toast.makeText(TestActivity.this, "SCAN STOPPED...", Toast.LENGTH_LONG).show();
-    }
-
-    @Override
-    protected void onDestroy() {
-        super.onDestroy();
-    }
-
-    @Override
-    protected void onPause() {
-        super.onPause();
-    }
-
-    @Override
-    protected void onResume() {
-        super.onResume();
-    }
 }

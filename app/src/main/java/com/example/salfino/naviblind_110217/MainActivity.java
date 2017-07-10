@@ -1,6 +1,14 @@
 package com.example.salfino.naviblind_110217;
 
 import android.Manifest;
+import android.bluetooth.BluetoothAdapter;
+import android.bluetooth.BluetoothGatt;
+import android.bluetooth.BluetoothManager;
+import android.bluetooth.le.BluetoothLeScanner;
+import android.bluetooth.le.ScanCallback;
+import android.bluetooth.le.ScanResult;
+import android.bluetooth.le.ScanSettings;
+import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.media.AudioAttributes;
@@ -8,6 +16,7 @@ import android.media.AudioManager;
 import android.media.MediaPlayer;
 import android.os.Bundle;
 import android.os.CountDownTimer;
+import android.os.Handler;
 import android.os.SystemClock;
 import android.speech.RecognitionListener;
 import android.speech.RecognizerIntent;
@@ -32,6 +41,7 @@ import com.indooratlas.android.sdk.IARegion;
 
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 
@@ -55,7 +65,8 @@ public class MainActivity extends AppCompatActivity {
             R.string.empty,
             R.string.no_service,
             R.string.try_again,
-            R.string.start_point
+            R.string.start_point,
+            R.string.narrow_open_doorway
     };
 
     private int[] audioCommands = {
@@ -76,7 +87,10 @@ public class MainActivity extends AppCompatActivity {
             R.raw.alert,
             R.raw.service_not_ready,
             R.raw.try_again,
-            R.raw.start_position
+            R.raw.start_position,
+            R.raw.tick,
+            R.raw.metal_metronome,
+            R.raw.narrow_open_door
     };
     //Waypoint geo-coordinates in decimal degrees (DD)
     private static final double GR_OFFICE_LAT = 51.52222145;
@@ -91,13 +105,14 @@ public class MainActivity extends AppCompatActivity {
     private static final double MAIN_DOOR_LON = -0.13069935;
     private static final int REQUEST_CODE = 1234;
     private final int MY_CODE_PERMISSIONS = 1;
-    //static final String FASTEST_INTERVAL = "fastestInterval";
-    //static final String SHORTEST_DISPLACEMENT = "shortestDisplacement";
+    private static final int PERMISSION_REQUEST_COARSE_LOCATION = 1;
+    private static final int PERMISSION_REQUEST_COARSE_BL = 2;
     private long DEFAULT_INTERVAL = 100L;//milliseconds
     private float DEFAULT_DISPLACEMENT = 0.2f;//meters
     public IALocationManager mIALocationManager;
     public MediaPlayer mPlayer;
     public SpeechRecognizer mSR;
+    public BluetoothAdapter mBTAdapter;
     public static Set<MediaPlayer> activePlayers = new HashSet<MediaPlayer>();
     //private Button mLocationButton;
     //private Button mStopButton;
@@ -114,6 +129,19 @@ public class MainActivity extends AppCompatActivity {
     private boolean statusOK = false;
     private boolean permissionOK = false;
 
+    BluetoothGatt mBluetoothGatt;
+    BluetoothLeScanner scanner;
+    ScanSettings scanSettings;
+    public boolean mScanning;
+    public Handler mHandler;
+    public static final long SCAN_PERIOD = 10000;
+    String dName = "";
+    String macAddress = "";
+    public double rssiGR = -17;
+    public double rssiSR = -17;
+    public double metersGR = 0;
+    public double metersSR = 0;
+
     private void logText(String msg) {
         double duration = mRequestStartTime != 0
                 ? (SystemClock.elapsedRealtime() - mRequestStartTime) / 1e3
@@ -124,6 +152,151 @@ public class MainActivity extends AppCompatActivity {
         mLogging.setTextSize(35);
         mLogging.setTextColor(0xFFFF8290);
         mScrollView.smoothScrollBy(0, mLogging.getBottom());
+    }
+
+    //Method to convert a byte array to a HEX. string.
+    private String byteArrayToHex(byte[] a) {
+        StringBuilder sb = new StringBuilder(a.length * 2);
+        for(byte b: a)
+            sb.append(String.format("%02x", b & 0xff));
+
+        return sb.toString();
+    }
+
+    public void initialiseBLE(){
+
+        final BluetoothManager bluetoothManager =  (BluetoothManager) getSystemService(Context.BLUETOOTH_SERVICE);
+        mBTAdapter = bluetoothManager.getAdapter();//Get the Bluetooth Adapter first
+        //Create the scan settings
+        ScanSettings.Builder scanSettingsBuilder = new ScanSettings.Builder();
+        //Set scan latency mode. Lower latency, faster device detection/more battery and resources consumption
+        scanSettingsBuilder.setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY);
+        //Wrap settings together and save on a settings var (declared globally).
+        scanSettings = scanSettingsBuilder.build();
+        //Get the BLE scanner from the BT adapter (var declared globally)
+        scanner = mBTAdapter.getBluetoothLeScanner();
+    }
+    private void startLeScan(boolean enable) {
+        if (enable) {
+            // Stops scanning after a pre-defined scan period.
+           /* mHandler.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    mScanning = false;
+                    scanner.stopScan(mScanCallback);
+                    mTest.setText("Stopped Scanning...");
+                }
+            }, SCAN_PERIOD);*/
+            //********************
+            //START THE BLE SCAN
+            //********************
+            //Scanning parameters FILTER / SETTINGS / RESULT CALLBACK. Filter are used to define a particular
+            //device to scan for. The Callback is defined above as a method.
+            mScanning = true;
+            scanner.startScan(null, scanSettings, mScanCallback);
+            //Toast.makeText(BLEScanner.this, "SCANNING FOR BLE DEVICES...", Toast.LENGTH_SHORT).show();
+        }else{
+            //Stop scan
+            mScanning = false;
+            scanner.stopScan(mScanCallback);
+            //Toast.makeText(BLEScanner.this, "SCANNING STOPPED...", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private double getDistance(double rssi, String location) {//RSSI (dBm) = -10n log10(d) + A and n = 2 for free space and A is average RSSI at 1m
+        double A = -60.0;
+        if (location.equals("GC")){
+            A = -60.0;// average RSSI for beacon installed in George Roussos office
+        } else if (location.equals("SR")) {
+            A =  -50.0; // average RSSI for beacon isntalled in Staff Room, next to lifts
+        }
+        return Math.pow(10.0,((rssi-(A))/-25.0));//-60dBm is average RSSI at 1m distance i.e. A
+    }
+
+    //Finding BLE Devices
+    private ScanCallback mScanCallback = new ScanCallback() {
+        @Override
+        public void onScanResult(int callbackType, ScanResult result) {
+            super.onScanResult(callbackType, result);
+
+            String advertisingString = byteArrayToHex(result.getScanRecord().getBytes());
+            dName = result.getDevice().getName();
+            if (dName != null){
+                dName = (result.getDevice().getName()).trim();
+            }
+            macAddress = result.getDevice().getAddress();
+            if (macAddress != null){
+                macAddress = (result.getDevice().getAddress()).trim();
+            }
+
+            if (macAddress != null && macAddress.equals("F4:46:EA:8F:C2:2D")) {
+                rssiGR = result.getRssi();
+                metersGR = getDistance(rssiGR,"GC");
+
+            } else if (macAddress != null && macAddress.equals("C3:4E:E7:D1:2E:3A")) {
+                rssiSR = result.getRssi();
+                metersSR = getDistance(rssiSR,"SR");
+            }
+            else
+
+            {
+                //Do nothing
+            }
+
+            /*if (dName != null && macAddress != null) {
+                if (dName.equals("iBKS105") && macAddress.equals("F4:46:EA:8F:C2:2D")) {
+                    mTest.setText(String.format(Locale.UK, "RSSI: %d, \nAdvertisment: %s, \nMAC Address: %s, \nDevice Name: %s",
+                        result.getRssi(), advertisingString, result.getDevice().getAddress(), result.getDevice().getName()));
+                } else {
+                     mTest.setText("Scanning for GR Waypoint Device...");
+            }
+            } else {
+                mTest.setText("Reading NULL...");
+            }*/
+
+        }
+
+        @Override
+        public void onBatchScanResults(List<ScanResult> results) {
+            super.onBatchScanResults(results);
+        }
+
+        @Override
+        public void onScanFailed(int errorCode) {
+            super.onScanFailed(errorCode);
+        }
+    };
+
+    private void initialiseBluetooth(){
+
+        //Check if device does support BT by hardware
+        if (!getBaseContext().getPackageManager().hasSystemFeature(PackageManager.FEATURE_BLUETOOTH)) {
+            //Toast shows a message on the screen for a LENGTH_SHORT period
+            Toast.makeText(this, "BLUETOOTH NOT SUPPORTED!", Toast.LENGTH_SHORT).show();
+            finish();
+        }
+
+        //Check if device does support BT Low Energy by hardware. Else close the app(finish())!
+        if (!getBaseContext().getPackageManager().hasSystemFeature(PackageManager.FEATURE_BLUETOOTH_LE)) {
+            //Toast shows a message on the screen for a LENGTH_SHORT period
+            Toast.makeText(this, "BLE NOT SUPPORTED!", Toast.LENGTH_SHORT).show();
+            finish();
+        }else {
+            //If BLE is supported, get the BT adapter. Preparing for use!
+            mBTAdapter = BluetoothAdapter.getDefaultAdapter();
+            //If getting the adapter returns error, close the app with error message!
+            if (mBTAdapter == null) {
+                Toast.makeText(this, "ERROR GETTING BLUETOOTH ADAPTER!", Toast.LENGTH_SHORT).show();
+                finish();
+            }else{
+                //Check if BT is enabled! This method requires BT permissions in the manifest.
+                if (!mBTAdapter.isEnabled()) {
+                    //If it is not enabled, ask user to enable it with default BT enable dialog! BT enable response will be received in the onActivityResult method.
+                    Intent enableBTintent = new Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE);
+                    startActivityForResult(enableBTintent, PERMISSION_REQUEST_COARSE_BL);
+                }
+            }
+        }
     }
 
     private void timer(int seconds){
@@ -137,43 +310,6 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void onFinish() {
                 Toast.makeText(MainActivity.this, "Timer Stopped.", Toast.LENGTH_SHORT).show();
-            }
-        }.start();
-    }
-    private void introduction(){
-        //displayTextTwo(14,14);//Pre-audio alert
-        new CountDownTimer(6000, 1000){//10 second count down timer
-            @Override
-            public void onTick(long millisUntilFinished) {
-                Toast.makeText(MainActivity.this, "Timer On...", Toast.LENGTH_SHORT).show();
-            }
-
-            @Override
-            public void onFinish() {
-                displayTextTwo(14,14);//Pre-audio alert
-                new CountDownTimer(3000, 1000){//10 second count down timer
-                    @Override
-                    public void onTick(long millisUntilFinished) {
-                        Toast.makeText(MainActivity.this, "Timer On...", Toast.LENGTH_SHORT).show();
-                    }
-
-                    @Override
-                    public void onFinish() {
-                        displayTextTwo(13,13);//Welcome audio at start of application
-                        new CountDownTimer(22000, 1000){//10 second count down timer
-                            @Override
-                            public void onTick(long millisUntilFinished) {
-                                Toast.makeText(MainActivity.this, "Timer On...", Toast.LENGTH_SHORT).show();
-                            }
-
-                            @Override
-                            public void onFinish() {
-                                Toast.makeText(MainActivity.this, "launch Speech Recognition debug.", Toast.LENGTH_LONG).show();
-                                startVoiceRecognitionActivity();//Just temporary action
-                            }
-                        }.start();
-                    }
-                }.start();
             }
         }.start();
     }
@@ -235,6 +371,85 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    private void confirmText (final int textCommandIndex, final int audioCommandIndex) {
+
+        mLogging.setText("");
+        mLogging.setText(textCommands[textCommandIndex]);
+        mLogging.setTextSize(30);
+        mLogging.setTextColor(0xFFFF4046);
+        mScrollView.smoothScrollBy(0, mLogging.getBottom());
+
+        try {
+            mPlayer = MediaPlayer.create(this,audioCommands[audioCommandIndex]);
+            activePlayers.add(mPlayer);//Garbage collector issue ....keeping at least one pointer to the instance somewhere
+            AudioAttributes myAttributes = new AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                    .build();
+            mPlayer.setAudioAttributes(myAttributes);
+            mPlayer.setLooping(false);
+            mPlayer.start();
+            mPlayer.setOnCompletionListener(new MediaPlayer.OnCompletionListener() {
+                @Override
+                public void onCompletion(MediaPlayer mp) {
+                    mp.stop();
+                    activePlayers.remove(mp);
+                    mp.release();
+                    mPlayer = null;
+                    if (textCommandIndex == 3) {
+                        startVoiceRecognitionActivity();//Launch speech recogniser
+                    }else if (textCommandIndex == 5){
+                        startVoiceRecognitionActivity();//Launch speech recogniser
+                    }else if (textCommandIndex == 18) {
+                        startVoiceRecognitionActivity();//Launch speech recogniser
+                    } else {
+                        Toast.makeText(MainActivity.this, "PLAYBACK COMPLETE - UNDEFINED!!!", Toast.LENGTH_SHORT).show();
+                    }
+                }
+            });
+
+            mPlayer.setOnErrorListener(new MediaPlayer.OnErrorListener() {
+                @Override
+                public boolean onError(MediaPlayer mp, int what, int extra) {
+                    Toast.makeText(MainActivity.this, "ERROR!!!!!!", Toast.LENGTH_SHORT).show();
+                    switch (what) {
+                        case MediaPlayer.MEDIA_ERROR_UNKNOWN:
+                            switch (extra) {
+                                case MediaPlayer.MEDIA_ERROR_IO:
+                                    break;
+                                case MediaPlayer.MEDIA_ERROR_MALFORMED:
+                                    break;
+                                case MediaPlayer.MEDIA_ERROR_UNSUPPORTED:
+                                    break;
+                                case MediaPlayer.MEDIA_ERROR_TIMED_OUT:
+                                    break;
+                            }
+                            logText("ERROR: " + "What Code: " + what + "Extra Code: " +extra);
+                            break;
+                        case MediaPlayer.MEDIA_ERROR_SERVER_DIED:
+                            switch (extra) {
+                                case MediaPlayer.MEDIA_ERROR_IO:
+                                    break;
+                                case MediaPlayer.MEDIA_ERROR_MALFORMED:
+                                    break;
+                                case MediaPlayer.MEDIA_ERROR_UNSUPPORTED:
+                                    break;
+                                case MediaPlayer.MEDIA_ERROR_TIMED_OUT:
+                                    break;
+                            }
+                            logText("ERROR: " + "What Code: " + what + "Extra Code: " +extra);
+                            break;
+                    }
+                    return false;
+                }
+            });
+        } catch (Exception e) {
+            Toast.makeText(MainActivity.this, "Check Wi-Fi connection or audio file missing!!", Toast.LENGTH_LONG).show();
+            //MediaPlayer mPlayer = MediaPlayer.create(this,R.raw.welcome);
+            //mPlayer.start();
+        }
+    }
+
     private void displayTextTwo (final int textCommandIndex, final int audioCommandIndex) {
 
         mLogging.setText("");
@@ -276,27 +491,60 @@ public class MainActivity extends AppCompatActivity {
                     if (textCommandIndex == 13) {
                         startVoiceRecognitionActivity();//Launch speech recogniser
                     }else if (textCommandIndex == 14){
-                        new CountDownTimer(3000, 1000){//3 second count down timer
+                        //Do nothing
+                    }else if (textCommandIndex == 17) {
+                        new CountDownTimer(5000, 1000) {// 5 seconds count down timer
                             @Override
                             public void onTick(long millisUntilFinished) {
-                                //
                             }
+
                             @Override
                             public void onFinish() {
-                                //
+                                confirmText(3, 3);//Confirm 4 steps
                             }
                         }.start();
-                    }else if (textCommandIndex == 17){
-                        mIALocationManager.requestLocationUpdates(IALocationRequest.create(), mIALocationListener);
+                    }else if (textCommandIndex == 1){
+                            new CountDownTimer(5000, 1000){// 5 seconds count down timer
+                                @Override
+                                public void onTick(long millisUntilFinished) {
+                                }
+
+                                @Override
+                                public void onFinish() {
+                                    confirmText(3,3);//Confirm 4 steps also after turning back
+                                }
+                            }.start();
+                        //mIALocationManager.requestLocationUpdates(IALocationRequest.create(), mIALocationListener);
                     }else if (textCommandIndex == 4){
-                        mIALocationManager.requestLocationUpdates(IALocationRequest.create(), mIALocationListener);
+                        new CountDownTimer(5000, 1000){// 5 seconds count down timer
+                            @Override
+                            public void onTick(long millisUntilFinished) {
+                            }
+
+                            @Override
+                            public void onFinish() {
+                                confirmText(5,10);//Confirm 2 steps
+                            }
+                        }.start();
+                        //mIALocationManager.requestLocationUpdates(IALocationRequest.create(), mIALocationListener);
                     }else if (textCommandIndex == 6){
-                        mIALocationManager.requestLocationUpdates(IALocationRequest.create(), mIALocationListener);
+                        new CountDownTimer(5000, 1000){// 5 seconds count down timer
+                            @Override
+                            public void onTick(long millisUntilFinished) {
+                            }
+
+                            @Override
+                            public void onFinish() {
+                                confirmText(18,20);//Confirm final destination
+                            }
+                        }.start();
+                       // mIALocationManager.requestLocationUpdates(IALocationRequest.create(), mIALocationListener);
                     }else if (textCommandIndex == 7){
-                        mIALocationManager.requestLocationUpdates(IALocationRequest.create(), mIALocationListener);
+                        //mainMenu();
+                       // mIALocationManager.requestLocationUpdates(IALocationRequest.create(), mIALocationListener);
                     }
                     else {
-                        Toast.makeText(MainActivity.this, "PLAYBACK COMPLETE - UNDEFINED!!!", Toast.LENGTH_SHORT).show();
+                        //Toast.makeText(MainActivity.this, "PLAYBACK COMPLETE - UNDEFINED!!!", Toast.LENGTH_SHORT).show();
                     }
                 }
             });
@@ -406,9 +654,29 @@ public class MainActivity extends AppCompatActivity {
         });
 
         //introduction();
+        initialiseBluetooth();
+        initialiseBLE();
+
+        //Intent serviceIntent = new Intent(MainActivity.this, BLEScanner.class);//Start BLE Scanning Service
+        //startService(serviceIntent);//Start background BLE scanning
+        //startService();
+
+         //mBLEReceiver = new BLEReceiver();//Register Broadcast Receiver to receive data from BLE Service
+         //IntentFilter intentFilter = new IntentFilter();
+         //intentFilter.addAction(BLEScanner.BLE_ACTION);
+         //registerReceiver(mBLEReceiver, intentFilter);
 
         displayTextTwo(14,14);
-        displayTextTwo(13,13);
+        new CountDownTimer(3000, 1000){// 3 seconds count down timer
+            @Override
+            public void onTick(long millisUntilFinished) {
+            }
+
+            @Override
+            public void onFinish() {
+                displayTextTwo(13,13);
+            }
+        }.start();
 
         //displayText(0,"https://naviblind.000webhostapp.com/welcomemale.mp3");
 
@@ -490,9 +758,9 @@ public class MainActivity extends AppCompatActivity {
       @Override
       public void onLocationChanged(IALocation iaLocation) {
           //Toast.makeText(MainActivity.this, "Location Changing...", Toast.LENGTH_SHORT).show();
-          mTextView.setText(String.format(Locale.UK, "Latitude: %.8f,\nLongitude: %.8f,\nAccuracy: %.8f,\nCertainty: %.8f,\nLevel: %d",
+          mTextView.setText(String.format(Locale.UK, "Latitude: %.8f,\nLongitude: %.8f,\nAccuracy: %.8f,\nCertainty: %.8f,\nLevel: %d,\nBLE DISTANCE SR: %.8f,\nBLE DISTANCE GR: %.8f",
                   iaLocation.getLatitude(), iaLocation.getLongitude(),iaLocation.getAccuracy(),iaLocation.getFloorCertainty(),
-                  iaLocation.getFloorLevel()));
+                  iaLocation.getFloorLevel(),metersSR,metersGR));
           //mTextView.setText(String.valueOf(iaLocation.getLatitude() + ", " + iaLocation.getLongitude()));
           //Location updates being delivered here
           mTextView.setTextSize(15);
@@ -511,39 +779,49 @@ public class MainActivity extends AppCompatActivity {
           mScrollView.smoothScrollBy(0, mLogging.getBottom());
 
           //if (calibrationOK && statusOK && permissionOK && iaLocation.getFloorLevel() == 2 && iaLocation.getAccuracy()<=15) {
-          if (iaLocation.getFloorLevel() == 2 && iaLocation.getAccuracy()<=12) {
-              Toast.makeText(MainActivity.this, "SERVICE RUNNING OK", Toast.LENGTH_SHORT).show();
+          if (iaLocation.getFloorLevel() == 2 && iaLocation.getAccuracy()<=8) {
+              //Toast.makeText(MainActivity.this, "SERVICE RUNNING OK", Toast.LENGTH_SHORT).show();
 
-            if (currentDistance_SP <= 6) {
+            if (currentDistance_SP <= 5) {
                 // displayText(0,"https://naviblind.000webhostapp.com/welcomemale.mp3");
                 //mIALocationManager.removeLocationUpdates(mIALocationListener);
-                Toast.makeText(MainActivity.this, "START POSITION", Toast.LENGTH_SHORT).show();
+                //Toast.makeText(MainActivity.this, "START POSITION", Toast.LENGTH_SHORT).show();
                 mIALocationManager.removeLocationUpdates(mIALocationListener);
+                startLeScan(false);
                 displayTextTwo(17,17);
 
-            } else if (currentDistance_4S <=6){
+            } else if (currentDistance_4S <=5){
                 //displayText(4,"https://naviblind.000webhostapp.com/narrow_corridor.mp3");
-                Toast.makeText(MainActivity.this, "FOUR STEPS", Toast.LENGTH_SHORT).show();
+                //Toast.makeText(MainActivity.this, "FOUR STEPS", Toast.LENGTH_SHORT).show();
                 mIALocationManager.removeLocationUpdates(mIALocationListener);
+                startLeScan(false);
                 displayTextTwo(4,5);
 
-            } else if (currentDistance_2S <=6) {
+            } else if (currentDistance_2S <=5) {
                 //displayText(6,"https://naviblind.000webhostapp.com/at_two_steps.mp3");
-                Toast.makeText(MainActivity.this, "TWO STEPS", Toast.LENGTH_SHORT).show();
+                //Toast.makeText(MainActivity.this, "TWO STEPS", Toast.LENGTH_SHORT).show();
                 mIALocationManager.removeLocationUpdates(mIALocationListener);
+                startLeScan(false);
                 displayTextTwo(6,1);
 
-            } else if (currentDistance_GR <=6) {
-                //displayText(7,"https://naviblind.000webhostapp.com/end_point.mp3");
-                Toast.makeText(MainActivity.this, "FINAL DESTINATION", Toast.LENGTH_SHORT).show();
+            } else if (currentDistance_MD <=5 || (metersSR <=4 && metersSR > 0)) {
+                //displayText(6,"https://naviblind.000webhostapp.com/at_two_steps.mp3");
+                //Toast.makeText(MainActivity.this, "NEAR LIFTS", Toast.LENGTH_SHORT).show();
                 mIALocationManager.removeLocationUpdates(mIALocationListener);
-                displayTextTwo(7,2);
+                startLeScan(false);
+                displayTextTwo(1,4);
 
+            } else if (currentDistance_GR <=5 || (metersGR <=3 && metersSR > 0)) {
+                //displayText(7,"https://naviblind.000webhostapp.com/end_point.mp3");
+                //Toast.makeText(MainActivity.this, "FINAL DESTINATION", Toast.LENGTH_SHORT).show();
+                mIALocationManager.removeLocationUpdates(mIALocationListener);
+                startLeScan(false);
+                displayTextTwo(7,2);
             }
 
           } else {
-              //displayTextTwo(15,15);
-              Toast.makeText(MainActivity.this, "WAIT FOR SERVICE!!!!!", Toast.LENGTH_SHORT).show();
+              displayTextTwo(15,18);
+              //Toast.makeText(MainActivity.this, "WAIT FOR SERVICE!!!!!", Toast.LENGTH_SHORT).show();
           }
       }
 
@@ -586,7 +864,6 @@ public class MainActivity extends AppCompatActivity {
                   logText("Status: Temporarily unavailable");
                   statusOK = false;
           }
-
       }
   };
 
@@ -596,7 +873,7 @@ public class MainActivity extends AppCompatActivity {
             if (iaRegion.getType() == IARegion.TYPE_FLOOR_PLAN) {
                 String id = iaRegion.getId();
                 Log.d(TAG, "floorPlan changed to " + id);
-                Toast.makeText(MainActivity.this, "REGION CHANGE: " + id, Toast.LENGTH_SHORT).show();
+                //Toast.makeText(MainActivity.this, "REGION CHANGE: " + id, Toast.LENGTH_SHORT).show();
                 IALocation location = new IALocation.Builder()
                         .withFloorLevel(2).build();
                 mIALocationManager.setLocation(location);//Explicitly set floor level to 2
@@ -631,6 +908,7 @@ public class MainActivity extends AppCompatActivity {
         //Toast.makeText(MainActivity.this, "DEBUG::onPause() callback...", Toast.LENGTH_LONG).show();
         mIALocationManager.removeLocationUpdates(mIALocationListener);
         mIALocationManager.unregisterRegionListener(mRegionListener);
+        //stopService();
         //mPlayer.pause();
         //mPlayer.release();//releasing and nullifying MediaPLayer
         //mPlayer = null;
@@ -640,9 +918,13 @@ public class MainActivity extends AppCompatActivity {
     protected void onDestroy() {
         //Toast.makeText(MainActivity.this, "DEBUG::onDestroy() callback...", Toast.LENGTH_LONG).show();
         mIALocationManager.destroy();
-        super.onDestroy();
+        startLeScan(false);
         mPlayer.release();//releasing and nullifying MediaPLayer
-        mPlayer = null;
+        super.onDestroy();
+
+        //stopService();
+        //unregisterReceiver(mReceiver);//Unregister broadcast receiver
+        //mPlayer = null;
     }
 
     @Override
@@ -665,11 +947,20 @@ public class MainActivity extends AppCompatActivity {
                 //Intent i = new Intent(MainActivity.this, TestActivity.class);
                 startActivity(i);
                 return true;
-            /*case R.id.menu_item_debug:
-                Toast.makeText(MainActivity.this, "launch Debug Session...", Toast.LENGTH_LONG).show();
-                Intent k = new Intent(MainActivity.this, DebugActivity.class);
+            case R.id.menu_item_BLE:
+                Toast.makeText(MainActivity.this, "BLE Scanning...", Toast.LENGTH_LONG).show();
+                Intent k = new Intent(MainActivity.this, BluetoothScanner.class);
                 startActivity(k);
-                return true;*/
+                return true;
+            case R.id.menu_test_activity:
+                Toast.makeText(MainActivity.this, "Testing...", Toast.LENGTH_LONG).show();
+                Intent m = new Intent(MainActivity.this, TestActivity.class);
+                startActivity(m);
+                if(mPlayer != null && mPlayer.isPlaying())
+                {
+                    mPlayer.pause();
+                }
+                return true;
             case R.id.menu_item_test_speech:
                 Toast.makeText(MainActivity.this, "launch Speech Recognition debug.", Toast.LENGTH_LONG).show();
                 startVoiceRecognitionActivity();//Just temporary action
@@ -740,7 +1031,7 @@ public class MainActivity extends AppCompatActivity {
         @Override
         public void onError(int error) {
             Log.d(TAG,  "error " +  error);
-            Toast.makeText(MainActivity.this, "DEBUG::Recognition Listener onError()", Toast.LENGTH_LONG).show();
+            //Toast.makeText(MainActivity.this, "DEBUG::Recognition Listener onError()", Toast.LENGTH_LONG).show();
             mLogging.setText("");
             mLogging.setText("Error Number " + error + " occurred.");
             mLogging.setTextSize(30);
@@ -749,7 +1040,7 @@ public class MainActivity extends AppCompatActivity {
             long startTime = System.currentTimeMillis();
             tryAgain();
             long estimatedTime = System.currentTimeMillis() - startTime;
-            Toast.makeText(MainActivity.this, "ESTIMATED TIME IN ms IS::" + estimatedTime, Toast.LENGTH_SHORT).show();
+            //Toast.makeText(MainActivity.this, "ESTIMATED TIME IN ms IS::" + estimatedTime, Toast.LENGTH_SHORT).show();
         }
 
         @Override
@@ -772,13 +1063,19 @@ public class MainActivity extends AppCompatActivity {
             if (myInput.equals("I am ready to start")){
                 //Toast.makeText(MainActivity.this, "DEBUG::Request Location Updates", Toast.LENGTH_SHORT).show();
                 mIALocationManager.requestLocationUpdates(IALocationRequest.create(), mIALocationListener);
+                startLeScan(true);
+                Toast.makeText(MainActivity.this, "BLE ON!", Toast.LENGTH_SHORT).show();
+            }else if (myInput.equals("yes I can confirm")){
+                mIALocationManager.requestLocationUpdates(IALocationRequest.create(), mIALocationListener);
+                startLeScan(true);
+                Toast.makeText(MainActivity.this, "BLE ON!", Toast.LENGTH_SHORT).show();
             }
 
             else{
                 long startTime = System.currentTimeMillis();
                 tryAgain();
                 long estimatedTime = System.currentTimeMillis() - startTime;
-                Toast.makeText(MainActivity.this, "ESTIMATED TIME IN ms IS::" + estimatedTime, Toast.LENGTH_SHORT).show();
+                //Toast.makeText(MainActivity.this, "ESTIMATED TIME IN ms IS::" + estimatedTime, Toast.LENGTH_SHORT).show();
             }
             //for (int i = 0; i < data.size(); i++)
             //{
@@ -793,7 +1090,7 @@ public class MainActivity extends AppCompatActivity {
         public void onPartialResults(Bundle partialResults) {
             Log.d(TAG, "onPartialResults");
 
-            Toast.makeText(MainActivity.this, "DEBUG::Recognition Listener onPartialResults()", Toast.LENGTH_LONG).show();
+            /*Toast.makeText(MainActivity.this, "DEBUG::Recognition Listener onPartialResults()", Toast.LENGTH_LONG).show();
             String mystr = new String();
             Log.d(TAG, "onResults " + partialResults);
 
@@ -802,7 +1099,8 @@ public class MainActivity extends AppCompatActivity {
             mLogging.setText("You said : " + data.get(0));
             mLogging.setTextSize(30);
             mLogging.setTextColor(0xFFFF4046);
-            mScrollView.smoothScrollBy(0, mLogging.getBottom());
+            mScrollView.smoothScrollBy(0, mLogging.getBottom());*/
+            tryAgain();
             //introduction();
             //for (int i = 0; i < data.size(); i++)
             //{
@@ -815,6 +1113,7 @@ public class MainActivity extends AppCompatActivity {
         @Override
         public void onEvent(int eventType, Bundle params) {
             Log.d(TAG, "onEvent " + eventType);
+            tryAgain();
 
         }
     }

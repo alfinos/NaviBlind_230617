@@ -1,7 +1,8 @@
 <resources>
-    <string name="app_name">NaviBlind Two</string>
+    <string name="app_name">NaviBlind Five</string>
     <string name="floor_plan">Floor Plan</string>
-    <string name="debug">Launch Debug</string>
+    <string name="debug">BLE Scan</string>
+    <string name="test">Test Activity</string>
     <string name="test_speech">Test Speech</string>
 
 
@@ -21,32 +22,39 @@
                 This application will guide you to room number two six seven.
                 When ready to start, wait for the notification alert and say "I am ready to start".</string>
 
-    <string name="main_door">NOT USED: Have you gone through the main fire exit door in front of you?
-                Please say Yes when ready.</string>
+    <string name="main_door">This waypoint is NEAR LIFTS: Please turn backwards and start walking forward for about
+                fifteen (15) steps. Then turn cautiously to the right and take the sub-level stairways
+                containing four steps down towards the main corridor.</string>
 
     <string name="after_main_door">NOT USED: Keep walking forward for about ten (10) steps. Then turn
                 cautiously to the right and take the sub-level stairways containing four steps
                 down towards the main corridor.</string>
 
-    <string name="four_steps">Can you confirm the presence of the four step sub-level stairway
-                in front of you? Please say Yes I can confirm when ready.</string>
+    <string name="four_steps">Please be careful , confirm the presence of the four step sub-level stairway
+                in front of you when you get there. When ready, please wait for the notification alert
+                and say "Yes I can confirm".</string>
 
-    <string name="narrow_corridor">This waypoint is FOUR STEPS: Keep walking forward and take the four
+    <string name="narrow_corridor">This waypoint is FOUR STEPS: Be careful , use the hand rails and take the four
                 step sub-level stairway down to the main corridor. This corridor is narrow and long, keep
                 walking forward for about twenty five more (25) steps. At the end of this corridor take the
-                sub-level stairways containing two steps up and turn right towards room two six seven (267).
+                sub-level stairways containing two steps up and turn to the right towards room number two six seven (267).
                 </string>
 
-    <string name="two_steps">Can you confirm the presence of the two step sub-level stairway in
-                front of you? Please say Yes I can confirm when ready.</string>
+    <string name="two_steps">Please confirm the presence of the two step sub-level stairway
+                in front of you when you get there. When ready, please wait for the notification alert
+                and say "Yes I can confirm".</string>
 
-    <string name="at_two_steps">This waypoint is TWO STEPS: Take the sub-level stairways containing
-                two steps up and turn right towards room two six seven (267). Keep walking forward for
-                about fifteen (15) more steps. Room two six seven (267) is at the end of this corridor,
-                to the left passed a narrow open doorway.</string>
+    <string name="at_two_steps">This waypoint is TWO STEPS: Use the hand rails and take the sub-level stairways containing
+                two steps up and turn to the right towards room number two six seven (267). Keep walking forward for
+                about twenty (20) more steps. Room number two six seven (267) is at the end of this corridor,
+                in front of you, passed a narrow open doorway.</string>
 
-    <string name="end_point">This waypoint is END POINT: You have arrived to room two six seven (267)
-                which has its door to your left.</string>
+    <string name="end_point">This waypoint is END POINT: You have arrived to room number two six seven (267)
+                which has its door in front of you.</string>
+
+    <string name="narrow_open_doorway">Please confirm the presence of the narrow open doorway
+                in front of you when you get there. When ready, please wait for the notification alert
+                and say "Yes I can confirm"..</string>
 
     <string name="start_point">This waypoint is STARTING POINT: Please start walking forward for about
                 twenty five (25) steps. Then turn cautiously to the left and take the sub-level stairways
